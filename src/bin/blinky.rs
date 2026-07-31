@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use esp_backtrace as _;
+use esp_backtrace as _; //needed as a side-effect import - links the panic_handler into the binary
 use esp_hal::gpio::OutputConfig;
 use esp_hal::gpio::{Level, Output};
 use esp_hal::time::{Duration, Instant};
