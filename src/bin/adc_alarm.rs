@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::cell::RefCell;
+use core::ops::{Deref, DerefMut};
 use critical_section::Mutex;
 use embassy_executor::Spawner;
 use embassy_time::Timer;
