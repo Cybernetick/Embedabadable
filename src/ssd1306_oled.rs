@@ -1,9 +1,8 @@
 use crate::CURRENT_TIME_READINGS;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::Timer;
 use esp_hal::i2c::master::{I2c, I2cAddress};
-use esp_hal::{Async, Blocking};
+use esp_hal::Async;
 use esp_println::println;
 use font8x8::UnicodeFonts;
 

@@ -1,11 +1,10 @@
+use crate::CURRENT_TIME_READINGS;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::Timer;
-use esp_hal::{Async, Blocking};
-use esp_hal::i2c::master::{Error, I2c, I2cAddress};
+use esp_hal::i2c::master::{I2c, I2cAddress};
+use esp_hal::Async;
 use esp_println::println;
-use crate::CURRENT_TIME_READINGS;
-#[allow(unused_imports)]
 use rtc_core::bcd::{bcd2dec, dec2bcd};
 
 const DS1307_FLAG_ADDRESS: u8 = 0x0A;
