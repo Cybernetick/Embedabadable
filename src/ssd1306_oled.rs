@@ -1,10 +1,13 @@
 use crate::CURRENT_TIME_READINGS;
+use crate::ds1307_clock::DS1307Clock;
+use crate::fonts::large::LARGE;
+use crate::fonts::small::SMALL;
+use crate::fonts::{Font, FontBitOrder, FontOrientation};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use esp_hal::i2c::master::{I2c, I2cAddress};
 use esp_hal::Async;
+use esp_hal::i2c::master::{I2c, I2cAddress};
 use esp_println::println;
-use font8x8::UnicodeFonts;
 
 const OLED_ADDRESS: u8 = 0x3C;
 const SCREEN_WIDTH: i16 = 128;
@@ -61,24 +64,12 @@ async fn sends_command(bus: &mut I2c<'static, Async>, command: &Ssd1306Command) 
 #[embassy_executor::task]
 pub async fn draw_clock_time(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) {
     let mut screen_buffer = [0x00; 1024];
-    let fonts = font8x8::BASIC_FONTS;
     loop {
         let time_reading = CURRENT_TIME_READINGS.wait().await;
         let mut bus_ = bus.lock().await;
         screen_buffer.fill(0x00);
-        let mut characters: [char; 8] = ['0'; 8];
-        characters[0] = char::from_digit(time_reading.hour as u32 / 10, 10).unwrap();
-        characters[1] = char::from_digit(time_reading.hour as u32 % 10, 10).unwrap();
-        characters[2] = ':';
-        characters[3] = char::from_digit(time_reading.min as u32 / 10, 10).unwrap();
-        characters[4] = char::from_digit(time_reading.min as u32 % 10, 10).unwrap();
-        characters[5] = ':';
-        characters[6] = char::from_digit(time_reading.sec as u32 / 10, 10).unwrap();
-        characters[7] = char::from_digit(time_reading.sec as u32 % 10, 10).unwrap();
-
-        for i in 0..characters.len() {
-            draw_char(&mut screen_buffer, 20 + 10 * i as i16, 24, &fonts.get(characters[i]).unwrap())
-        }
+        fill_time_pixels(&time_reading, &mut screen_buffer);
+        fill_date_pixels(&time_reading, &mut screen_buffer);
         flush_buffer(&mut bus_, &screen_buffer).await;
         println!(
             "Time is {}:{}:{}",
@@ -88,11 +79,97 @@ pub async fn draw_clock_time(bus: &'static Mutex<NoopRawMutex, I2c<'static, Asyn
     }
 }
 
-fn draw_char(buffer: &mut [u8; 1024], x: i16, y: i16, font: &[u8; 8]) {
-    for i in 0..font.len() {
-        for j in 0..font.len() {
-            if (font[i] >> j) & 1 == 1 {
-                set_pixel(buffer, x + j as i16, y + i as i16);
+fn fill_time_pixels(time_reading: &DS1307Clock, buff: &mut [u8; 1024]) {
+    let mut characters: [char; 8] = ['0'; 8];
+    let font = LARGE;
+    characters[0] = char::from_digit(time_reading.hour as u32 / 10, 10).unwrap();
+    characters[1] = char::from_digit(time_reading.hour as u32 % 10, 10).unwrap();
+    characters[2] = ':';
+    characters[3] = char::from_digit(time_reading.min as u32 / 10, 10).unwrap();
+    characters[4] = char::from_digit(time_reading.min as u32 % 10, 10).unwrap();
+    characters[5] = ' ';
+    characters[6] = char::from_digit(time_reading.sec as u32 / 10, 10).unwrap();
+    characters[7] = char::from_digit(time_reading.sec as u32 % 10, 10).unwrap();
+
+    let mut offset = 0;
+    let glyph_baseline: u8 = 38;
+    for (index, character) in characters.iter().enumerate() {
+        let scale_factor = match index {
+            0..=5 => 2,
+            _ => 1
+        };
+        let scaled_advance = font.advance as i16 * scale_factor as i16;
+        let glyph_top_y = (glyph_baseline - 7 * scale_factor) as i16;
+        draw_char(buff, offset + scaled_advance, glyph_top_y, scale_factor, &font, *character);
+        offset += scaled_advance;
+    }
+}
+
+fn fill_date_pixels(time_reading: &DS1307Clock, buff: &mut [u8; 1024]) {
+    let mut characters: [char; 10] = ['0'; 10];
+    let font = SMALL;
+    characters[0] = char::from_digit(time_reading.day_of_month as u32 / 10, 10).unwrap();
+    characters[1] = char::from_digit(time_reading.day_of_month as u32 % 10, 10).unwrap();
+    characters[2] = '.';
+    characters[3] = char::from_digit(time_reading.month as u32 / 10, 10).unwrap();
+    characters[4] = char::from_digit(time_reading.month as u32 % 10, 10).unwrap();
+    characters[5] = '.';
+    characters[6] = char::from_digit(time_reading.year as u32 / 1000, 10).unwrap();
+    characters[7] = char::from_digit((time_reading.year / 100) as u32 % 10, 10).unwrap();
+    characters[8] = char::from_digit((time_reading.year / 10) as u32 % 10, 10).unwrap();
+    characters[9] = char::from_digit(time_reading.year as u32 % 10, 10).unwrap();
+
+    draw_text(buff, 10, 0, 1, &font, &characters);
+}
+
+fn draw_text(buffer: &mut [u8; 1024], x: i16, y: i16, scale: u8, font: &Font, text: &[char]) {
+    let scaled_advance = font.advance as i16 * scale as i16;
+    for i in 0..text.len() {
+        draw_char(
+            buffer,
+            x + scaled_advance * i as i16,
+            y,
+            scale,
+            font,
+            text[i],
+        )
+    }
+}
+
+fn draw_char(
+    buffer: &mut [u8; 1024],
+    start_x: i16,
+    start_y: i16,
+    scale: u8,
+    font: &Font,
+    character_to_draw: char,
+) {
+    let glyph_data = (font.lookup)(character_to_draw);
+    let (byte_count, bit_count) = match font.orientation {
+        FontOrientation::Horizontal => (font.height, font.width),
+        FontOrientation::Vertical => (font.width, font.height),
+    };
+    for i in 0..byte_count {
+        for j in 0..bit_count {
+            let bit_to_check = match font.bit_order {
+                FontBitOrder::MsbFirst => glyph_data[i as usize] >> (7 - j),
+                FontBitOrder::LsbFirst => glyph_data[i as usize] >> j,
+            };
+            if bit_to_check & 1 == 1 {
+                let (glyph_x, glyph_y) = match font.orientation {
+                    FontOrientation::Horizontal => (j as i16, i as i16),
+                    FontOrientation::Vertical => (i as i16, j as i16),
+                };
+                // each glyph pixel becomes a scale × scale block
+                for dy in 0..scale as i16 {
+                    for dx in 0..scale as i16 {
+                        set_pixel(
+                            buffer,
+                            start_x + glyph_x * scale as i16 + dx,
+                            start_y + glyph_y * scale as i16 + dy,
+                        );
+                    }
+                }
             }
         }
     }
