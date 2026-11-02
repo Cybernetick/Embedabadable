@@ -9,8 +9,9 @@ use esp_hal::{Async};
 use esp_hal::i2c::master::I2c;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
+use esp_println::println;
 use static_cell::StaticCell;
-use Embedabadable::{ds1307_clock, ssd1306_oled};
+use Embedabadable::{bme280, ds1307_clock, ssd1306_oled};
 use Embedabadable::ds1307_clock::DS1307Clock;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -31,6 +32,21 @@ async fn main(spawner: Spawner) {
 
     let shared = CELL.init(Mutex::new(i2c_bus.into_async()));
 
+    let result = bme280::probe(shared).await;
+    match result {
+        Ok(_) => {
+            println!("bme280 found on probe");
+            let soft_reset_result = bme280::soft_reset(shared).await;
+            if let Result::Ok(()) = soft_reset_result {
+                println!("bme280 soft reset successful");
+                let calibration = bme280::read_calibration(shared).await;
+                println!("bme280 calibration: {:?}", calibration);
+            }
+        }
+        Err(err) => {
+            println!("bme280 not found on probe; {:?}", err);
+        }
+    }
     ssd1306_oled::run_init_sequence(shared).await;
     
     let is_time_set = ds1307_clock::is_time_set(shared).await;

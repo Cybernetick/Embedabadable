@@ -7,3 +7,4 @@ static CURRENT_TIME_READINGS: Signal<CriticalSectionRawMutex, DS1307Clock> = Sig
 pub mod ssd1306_oled;
 pub mod ds1307_clock;
 pub mod fonts;
+pub mod bme280;

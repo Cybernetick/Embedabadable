@@ -98,6 +98,7 @@ static GLYPHS: [[u8; 5]; 96] = [
     [0x02, 0x01, 0x02, 0x04, 0x02], // ~
     [0x7F, 0x7F, 0x7F, 0x7F, 0x7F], // del
 ];
+static DEGREE_GLYPH: [u8; 5] = [0x06, 0x09, 0x09, 0x06, 0x00];
 
 pub const SMALL: Font = Font {
     width: 5,
@@ -111,6 +112,12 @@ pub const SMALL: Font = Font {
 fn lookup_char(c: char) -> &'static [u8] {
     match c {
         ' '..='~' => &GLYPHS[c as usize - 32],
-        _ => &GLYPHS['?' as usize - 32],
+        _ => {
+            if (c as u8) == 0xB0 {
+                &DEGREE_GLYPH
+            } else {
+                &GLYPHS['?' as usize - 32]
+            }
+        },
     }
 }

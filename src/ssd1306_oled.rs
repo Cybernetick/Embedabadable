@@ -70,12 +70,31 @@ pub async fn draw_clock_time(bus: &'static Mutex<NoopRawMutex, I2c<'static, Asyn
         screen_buffer.fill(0x00);
         fill_time_pixels(&time_reading, &mut screen_buffer);
         fill_date_pixels(&time_reading, &mut screen_buffer);
+        fill_temp_pixels(&mut screen_buffer);
         flush_buffer(&mut bus_, &screen_buffer).await;
         println!(
             "Time is {}:{}:{}",
             time_reading.hour, time_reading.min, time_reading.sec
         );
         drop(bus_);
+    }
+}
+
+fn fill_temp_pixels(buffer: &mut [u8; 1024]) {
+    let mut characters: [char; 9] = ['0'; 9];
+    let font = SMALL;
+    characters[0] = char::from_digit(1u32, 10).unwrap();
+    characters[1] = char::from_digit(2u32, 10).unwrap();
+    characters[2] = '.';
+    characters[3] = char::from_digit(5u32, 10).unwrap();
+    characters[4] = 0xB0.into();
+    characters[5] = ' ';
+    characters[6] = char::from_digit(4u32, 10).unwrap();
+    characters[7] = char::from_digit(8u32, 10).unwrap();
+    characters[8] = '%';
+
+    for (index, character) in characters.iter().enumerate() {
+        draw_char(buffer, 0 + (index as i16 * font.advance as i16), 50, 1, &font, *character)
     }
 }
 
@@ -95,7 +114,7 @@ fn fill_time_pixels(time_reading: &DS1307Clock, buff: &mut [u8; 1024]) {
     let glyph_baseline: u8 = 38;
     for (index, character) in characters.iter().enumerate() {
         let scale_factor = match index {
-            0..=5 => 2,
+            0..=4 => 2,
             _ => 1
         };
         let scaled_advance = font.advance as i16 * scale_factor as i16;
@@ -118,8 +137,9 @@ fn fill_date_pixels(time_reading: &DS1307Clock, buff: &mut [u8; 1024]) {
     characters[7] = char::from_digit((time_reading.year / 100) as u32 % 10, 10).unwrap();
     characters[8] = char::from_digit((time_reading.year / 10) as u32 % 10, 10).unwrap();
     characters[9] = char::from_digit(time_reading.year as u32 % 10, 10).unwrap();
-
-    draw_text(buff, 10, 0, 1, &font, &characters);
+    let text_width = calc_text_width(&font, 1, &characters);
+    let text_x = (SCREEN_WIDTH - text_width) / 2;
+    draw_text(buff, text_x, 0, 1, &font, &characters);
 }
 
 fn draw_text(buffer: &mut [u8; 1024], x: i16, y: i16, scale: u8, font: &Font, text: &[char]) {
@@ -210,4 +230,12 @@ fn set_pixel(buffer: &mut [u8; 1024], x: i16, y: i16) {
     }
     let index = (y / 8) as usize * SCREEN_WIDTH as usize + x as usize;
     buffer[index] |= 1 << (y % 8);
+}
+
+fn calc_text_width(font: &Font, scale: u8, text: &[char]) -> i16 {
+    let mut width = 0;
+    for character in text {
+        width += (font.advance * scale) as i16;
+    }
+    width
 }
