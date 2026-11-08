@@ -41,6 +41,13 @@ async fn main(spawner: Spawner) {
                 println!("bme280 soft reset successful");
                 let calibration = bme280::read_calibration(shared).await;
                 println!("bme280 calibration: {:?}", calibration);
+                let configure_result = bme280::configure(shared).await;
+                if let Result::Ok(()) = configure_result {
+                    println!("bme280 configure successful");
+                    let measurements = bme280::take_force_measurements(shared, &calibration.unwrap()).await.expect("taking forced measurements failed");
+                    println!("bme280 measurements: {:?}", measurements);
+                }
+
             }
         }
         Err(err) => {

@@ -72,10 +72,6 @@ pub async fn draw_clock_time(bus: &'static Mutex<NoopRawMutex, I2c<'static, Asyn
         fill_date_pixels(&time_reading, &mut screen_buffer);
         fill_temp_pixels(&mut screen_buffer);
         flush_buffer(&mut bus_, &screen_buffer).await;
-        println!(
-            "Time is {}:{}:{}",
-            time_reading.hour, time_reading.min, time_reading.sec
-        );
         drop(bus_);
     }
 }

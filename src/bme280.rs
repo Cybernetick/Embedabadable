@@ -14,6 +14,10 @@ const BME280_STATUS_REGISTER: u8 = 0xF3;
 const BME280_CALIBRATION_DATA_REGISTER: u8 = 0x88;
 
 const BME280_CALIBRATION_DATA_REGISTER_2: u8 = 0xE1;
+const BME280_CONTROL_HUMIDITY_REGISTER: u8 = 0xF2;
+const BME280_CONFIG_REGISTER: u8 = 0xF5;
+const BME280_CONTROL_TEMP_PRESSURE_REGISTER: u8 = 0xF4;
+const BME280_PRESSURE_MSB_REGISTER: u8 = 0xF7;
 
 pub async fn probe(
     bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>,
@@ -75,7 +79,6 @@ pub async fn soft_reset(
 }
 
 pub async fn read_calibration(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) -> Result<Calibration, Bme280Error> {
-
     let mut lock = bus.lock().await;
     let mut first_calibration_buffer: [u8; 26] = [0x00; 26];
     lock.write_read_async(
@@ -97,6 +100,105 @@ pub async fn read_calibration(bus: &'static Mutex<NoopRawMutex, I2c<'static, Asy
     calibration_buffer[0..26].copy_from_slice(&first_calibration_buffer);
     calibration_buffer[26..33].copy_from_slice(&second_calibration_buffer);
     Ok(Calibration { raw: calibration_buffer })
+}
+
+pub async fn configure(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) -> Result<(), Bme280Error> {
+    let mut lock = bus.lock().await;
+    let mut payload: [u8; 2] = [BME280_CONTROL_HUMIDITY_REGISTER, 0x01];
+    lock.write_async(I2cAddress::from(BME280_ADDRESS), &payload).await?;
+    payload[0] = BME280_CONFIG_REGISTER;
+    payload[1] = 0x00;
+    lock.write_async(I2cAddress::from(BME280_ADDRESS), &payload).await?;
+    payload[0] = BME280_CONTROL_TEMP_PRESSURE_REGISTER;
+    /*
+        7:5 temperature oversampling, bits 4:2 pressure oversampling, bits 1:0 mode (00 sleep, 01 forced, 11 normal).
+    */
+    payload[1] = 0b001_001_00;
+    lock.write_async(I2cAddress::from(BME280_ADDRESS), &payload).await?;
+    Ok(())
+}
+
+pub async fn take_force_measurements(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>, calibration: &Calibration) -> Result<Bme280Readings, Bme280Error> {
+    let mut lock = bus.lock().await;
+    let payload: [u8; 2] = [BME280_CONTROL_TEMP_PRESSURE_REGISTER, 0b001_001_01];
+    lock.write_async(I2cAddress::from(BME280_ADDRESS), &payload).await?;
+    drop(lock);
+    Timer::after_millis(10).await;
+    lock = bus.lock().await;
+    let mut readings: [u8; 8] = [0x00; 8];
+    lock.write_read_async(I2cAddress::from(BME280_ADDRESS), &[BME280_PRESSURE_MSB_REGISTER], &mut readings).await?;
+    let pressure = u32::from_be_bytes([0x00, readings[0], readings[1], readings[2]]) >> 4;
+    let temperature = u32::from_be_bytes([0x00, readings[3], readings[4], readings[5]]) >> 4;
+    let humidity = u32::from_be_bytes([0x00, 0x00, readings[6], readings[7]]);
+    drop(lock);
+    if temperature == 0x80000 {
+        return Err(Bme280Error::TemperatureChannelSkipped)
+    }
+    if pressure == 0x80000 {
+        return Err(Bme280Error::PressureChannelSkipped)
+    }
+    if humidity == 0x8000 {
+        return Err(Bme280Error::HumidityChannelSkipped)
+    }
+    calculate_compensation(pressure, temperature, humidity, calibration)
+}
+
+fn calculate_compensation(raw_pressure: u32, raw_temperature: u32, raw_humidity: u32, calibration: &Calibration) -> Result<Bme280Readings, Bme280Error> {
+    let var1: i32;
+    let var2: i32;
+    let temperature: i32;
+    var1 = (((raw_temperature as i32 >> 3) - ((calibration.t1() as i32) << 1)) * (calibration.t2() as i32)) >> 11;
+    var2 = (((((raw_temperature as i32 >> 4) - (calibration.t1() as i32)) * ((raw_temperature as i32 >> 4) - calibration.t1() as i32)) >> 12) * (calibration.t3() as i32)) >> 14;
+
+    let temperature_fine = var1 + var2;
+    temperature = (temperature_fine * 5 + 128) >> 8;
+    println!("temperature calculated: {}, fine: {}", temperature, temperature_fine);
+
+    let mut var1: i64;
+    let mut var2: i64;
+    let mut pressure: i64;
+    var1 = i64::from(temperature_fine) - 128000;
+    var2 = var1 * var1 * calibration.p6() as i64;
+    var2 = var2 + ((var1 * calibration.p5() as i64) << 17);
+    var2 = var2 + ((calibration.p4() as i64) << 35);
+    var1 = ((var1 * var1 * calibration.p3() as i64) >> 8) + ((var1 * calibration.p2() as i64) << 12);
+    var1 = (((1 << 47) + var1) * calibration.p1() as i64) >> 33;
+    if var1 == 0 {
+        return Err(Bme280Error::CompensationCalculationDivisionByZero)
+    }
+    pressure = (1048576 - raw_pressure) as i64;
+    pressure = (((pressure << 31) - var2) * 3125) / var1;
+    var1 = (calibration.p9() as i64 * (pressure >> 13) * (pressure >> 13) >> 25);
+    var2 = (calibration.p8() as i64 * pressure) >> 19;
+    pressure = ((pressure + var1 + var2) >> 8) + ((calibration.p7() as i64) << 4);
+    println!("pressure calculated: {}", pressure as u32);
+
+    let var1 = temperature_fine as f32 - 76800.0;
+    let var2 = calibration.h4() as f32 * 64.0 + (calibration.h5() as f32 / 16384.0) * var1;
+    let var3 = raw_humidity as f32 - var2;
+    let var4 = calibration.h2() as f32 / 65536.0;
+    let var5 = 1.0 + (calibration.h3() as f32 / 67108864.0) * var1;
+    let var6 = 1.0 + (calibration.h6() as f32 / 67108864.0) * var1 * var5;
+    let var6 = var3 * var4 * (var5 * var6);
+
+    let mut humidity = var6 * (1.0 - calibration.h1() as f32 * var6 / 524288.0);
+    if humidity > 100.0 {
+        humidity = 100.0;
+    } else if humidity < 0.0 {
+        humidity = 0.0;
+    }
+    Ok(Bme280Readings {
+        temperature_c: temperature as f32 / 100f32,
+        pressure_hpa: (pressure as f32 / 256f32) / 100f32,
+        humidity_percents: humidity,
+    })
+}
+
+#[derive(Debug)]
+pub struct Bme280Readings {
+    pub temperature_c: f32,
+    pub pressure_hpa: f32,
+    pub humidity_percents: f32,
 }
 
 pub struct Calibration {
@@ -208,6 +310,10 @@ pub enum Bme280Error {
     I2CError(Error),
     WrongChipId(u8),
     Timeout,
+    CompensationCalculationDivisionByZero,
+    TemperatureChannelSkipped,
+    PressureChannelSkipped,
+    HumidityChannelSkipped,
 }
 
 impl From<esp_hal::i2c::master::Error> for Bme280Error {
