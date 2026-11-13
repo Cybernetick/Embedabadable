@@ -1,13 +1,13 @@
-use crate::CURRENT_TIME_READINGS;
 use crate::ds1307_clock::DS1307Clock;
 use crate::fonts::large::LARGE;
 use crate::fonts::small::SMALL;
 use crate::fonts::{Font, FontBitOrder, FontOrientation};
+use crate::{CURRENT_TEMPERATURE_READINGS, CURRENT_TIME_READINGS};
+use bme280_core::Readings;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use esp_hal::Async;
 use esp_hal::i2c::master::{I2c, I2cAddress};
-use esp_println::println;
 
 const OLED_ADDRESS: u8 = 0x3C;
 const SCREEN_WIDTH: i16 = 128;
@@ -64,33 +64,64 @@ async fn sends_command(bus: &mut I2c<'static, Async>, command: &Ssd1306Command) 
 #[embassy_executor::task]
 pub async fn draw_clock_time(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) {
     let mut screen_buffer = [0x00; 1024];
+    let mut sensor_readings: Option<Readings> = None;
     loop {
         let time_reading = CURRENT_TIME_READINGS.wait().await;
+        let temp_sensor_readings = CURRENT_TEMPERATURE_READINGS.try_take();
         let mut bus_ = bus.lock().await;
         screen_buffer.fill(0x00);
         fill_time_pixels(&time_reading, &mut screen_buffer);
         fill_date_pixels(&time_reading, &mut screen_buffer);
-        fill_temp_pixels(&mut screen_buffer);
+        if let Some(value) = temp_sensor_readings {
+            sensor_readings.replace(value);
+        }
+        if let Some(value) = sensor_readings {
+            fill_temp_pixels(&mut screen_buffer, value);
+        }
         flush_buffer(&mut bus_, &screen_buffer).await;
         drop(bus_);
     }
 }
 
-fn fill_temp_pixels(buffer: &mut [u8; 1024]) {
+fn fill_temp_pixels(buffer: &mut [u8; 1024], sensor_readings: Readings) {
     let mut characters: [char; 9] = ['0'; 9];
+    let mut negative_sign = false;
     let font = SMALL;
-    characters[0] = char::from_digit(1u32, 10).unwrap();
-    characters[1] = char::from_digit(2u32, 10).unwrap();
+    let mut tenth = if sensor_readings.temperature_c.is_sign_positive() {
+        (sensor_readings.temperature_c * 10.0 + 0.5) as u32
+    } else {
+        negative_sign = true;
+        ((sensor_readings.temperature_c * 10.0 - 0.5) as i32).unsigned_abs()
+    };
+    tenth = u32::min(tenth, 999);
+    characters[0] = char::from_digit(tenth / 100, 10).unwrap();
+    characters[1] = char::from_digit((tenth / 10) % 10, 10).unwrap();
     characters[2] = '.';
-    characters[3] = char::from_digit(5u32, 10).unwrap();
+
+    characters[3] = char::from_digit(tenth % 10, 10).unwrap();
     characters[4] = 0xB0.into();
     characters[5] = ' ';
-    characters[6] = char::from_digit(4u32, 10).unwrap();
-    characters[7] = char::from_digit(8u32, 10).unwrap();
+    let humidity_normalized = f32::min(sensor_readings.humidity_percent + 0.5 , 99.0);
+    characters[6] = char::from_digit((humidity_normalized / 10.0) as u32, 10).unwrap();
+    characters[7] = char::from_digit((humidity_normalized % 10.0) as u32, 10).unwrap();
     characters[8] = '%';
-
+    let mut text_width = calc_text_width(&font, 1, &characters);
+    let mut text_x = (SCREEN_WIDTH - text_width) / 2;
+    if negative_sign {
+        text_width += calc_text_width(&font, 1, &['-']);
+        text_x = (SCREEN_WIDTH - text_width) / 2;
+        draw_char(buffer, text_x, 50, 1, &font, '-');
+        text_x += font.advance as i16;
+    }
     for (index, character) in characters.iter().enumerate() {
-        draw_char(buffer, 0 + (index as i16 * font.advance as i16), 50, 1, &font, *character)
+        draw_char(
+            buffer,
+            text_x + (index as i16 * font.advance as i16),
+            50,
+            1,
+            &font,
+            *character,
+        )
     }
 }
 
@@ -111,11 +142,18 @@ fn fill_time_pixels(time_reading: &DS1307Clock, buff: &mut [u8; 1024]) {
     for (index, character) in characters.iter().enumerate() {
         let scale_factor = match index {
             0..=4 => 2,
-            _ => 1
+            _ => 1,
         };
         let scaled_advance = font.advance as i16 * scale_factor as i16;
         let glyph_top_y = (glyph_baseline - 7 * scale_factor) as i16;
-        draw_char(buff, offset + scaled_advance, glyph_top_y, scale_factor, &font, *character);
+        draw_char(
+            buff,
+            offset + scaled_advance,
+            glyph_top_y,
+            scale_factor,
+            &font,
+            *character,
+        );
         offset += scaled_advance;
     }
 }
@@ -230,7 +268,7 @@ fn set_pixel(buffer: &mut [u8; 1024], x: i16, y: i16) {
 
 fn calc_text_width(font: &Font, scale: u8, text: &[char]) -> i16 {
     let mut width = 0;
-    for character in text {
+    for _ in text {
         width += (font.advance * scale) as i16;
     }
     width
