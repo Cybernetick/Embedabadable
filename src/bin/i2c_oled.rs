@@ -12,6 +12,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
 use static_cell::StaticCell;
 use Embedabadable::{bme280, ds1307_clock, ssd1306_oled};
+use Embedabadable::bme280::{Bme280, Bme280Error};
 use Embedabadable::ds1307_clock::DS1307Clock;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -32,26 +33,13 @@ async fn main(spawner: Spawner) {
 
     let shared = CELL.init(Mutex::new(i2c_bus.into_async()));
 
-    let result = bme280::probe(shared).await;
-    match result {
-        Ok(_) => {
-            println!("bme280 found on probe");
-            let soft_reset_result = bme280::soft_reset(shared).await;
-            if let Result::Ok(()) = soft_reset_result {
-                println!("bme280 soft reset successful");
-                let calibration = bme280::read_calibration(shared).await;
-                println!("bme280 calibration: {:?}", calibration);
-                let configure_result = bme280::configure(shared).await;
-                if let Result::Ok(()) = configure_result {
-                    println!("bme280 configure successful");
-                    let measurements = bme280::take_force_measurements(shared, &calibration.unwrap()).await.expect("taking forced measurements failed");
-                    println!("bme280 measurements: {:?}", measurements);
-                }
-
-            }
+    let bme280_driver = Bme280::new(shared).await;
+    match bme280_driver {
+        Ok(driver) => {
+            spawner.spawn(bme280::measurements_task(driver).unwrap());
         }
         Err(err) => {
-            println!("bme280 not found on probe; {:?}", err);
+            println!("BME driver initialisation failed with error: {:?}", err);
         }
     }
     ssd1306_oled::run_init_sequence(shared).await;
