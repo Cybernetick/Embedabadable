@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex};
 use embassy_sync::mutex::Mutex;
@@ -9,17 +10,23 @@ use esp_hal::{Async};
 use esp_hal::i2c::master::I2c;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
-use esp_println::println;
 use static_cell::StaticCell;
-use Embedabadable::{bme280, ds1307_clock, ssd1306_oled};
-use Embedabadable::bme280::{Bme280, Bme280Error};
+use Embedabadable::{bme280_service, ds1307_clock, ssd1306_oled, CURRENT_TEMPERATURE_READINGS};
 use Embedabadable::ds1307_clock::DS1307Clock;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 static CELL: StaticCell<Mutex<NoopRawMutex, I2c<Async>>> = StaticCell::new();
+
+/// Concrete wrapper: embassy tasks can't be generic, so the bus type is fixed here.
+#[embassy_executor::task]
+async fn bme280_task(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) {
+    bme280_service::run(|| I2cDevice::new(bus), &CURRENT_TEMPERATURE_READINGS).await
+}
+
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
+    esp_println::logger::init_logger(log::LevelFilter::Info);
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let timer = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
@@ -32,8 +39,7 @@ async fn main(spawner: Spawner) {
             .with_sda(peripherals.GPIO8);
 
     let shared = CELL.init(Mutex::new(i2c_bus.into_async()));
-
-    spawner.spawn(bme280::measurements_task(shared).unwrap());
+    spawner.spawn(bme280_task(shared).unwrap());
     ssd1306_oled::run_init_sequence(shared).await;
     
     let is_time_set = ds1307_clock::is_time_set(shared).await;
