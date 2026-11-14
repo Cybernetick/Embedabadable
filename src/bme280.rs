@@ -29,10 +29,10 @@ pub struct Bme280 {
 
 impl Bme280 {
     pub async fn new(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) -> Result<Self, Bme280Error> {
-        let probe_result = Self::probe(bus).await?;
-        let reset = Self::soft_reset(bus).await?;
+        Self::probe(bus).await?;
+        Self::soft_reset(bus).await?;
         let calibration_data = Self::read_calibration(bus).await?;
-        let configure = Self::configure(bus).await?;
+        Self::configure(bus).await?;
 
         Ok(Self {
             i2c_bus: bus,
@@ -156,20 +156,40 @@ impl Bme280 {
 }
 
 #[embassy_executor::task]
-pub async fn measurements_task(device: Bme280) {
+pub async fn measurements_task(bus: &'static Mutex<NoopRawMutex, I2c<'static, Async>>) {
+    let mut measurements_error_count = 0;
     loop {
-        let measurements = device.take_force_measurements().await;
-        match measurements {
-            Ok(readings) => {
-                println!("successfully read data: {:?}", readings);
-                CURRENT_TEMPERATURE_READINGS.signal(readings);
+        let device = Bme280::new(bus).await;
+        match device {
+            Ok(device) => {
+                measurements_error_count = 0;
+                loop {
+                    let measurements = device.take_force_measurements().await;
+                    match measurements {
+                        Ok(readings) => {
+                            println!("successfully read data: {:?}", readings);
+                            measurements_error_count = 0;
+                            CURRENT_TEMPERATURE_READINGS.signal(readings);
+                        }
+                        Err(err) => {
+                            println!("failed the readings with error: {:?}", err);
+                            measurements_error_count += 1;
+                            if measurements_error_count > 10 {
+                                println!("too many errors, re-initialising the sensor");
+                                break;
+                            }
+                        }
+                    }
+                    Timer::after_millis(5000).await;
+                }
             }
-            Err(err) => {
-                println!("failed the readings with error: {:?}", err);
+            Err(error) => {
+                println!("failed to initialize the device with error: {:?}", error);
+                Timer::after_millis(5000).await;
             }
         }
-        Timer::after_millis(5000).await;
     }
+
 }
 
 #[derive(Debug)]
@@ -177,7 +197,7 @@ pub enum Bme280Error {
     I2CError(Error),
     WrongChipId(u8),
     Timeout,
-    Compensation(bme280_core::Error),
+    Compensation(bme280_core::Error)
 }
 
 impl From<Error> for Bme280Error {

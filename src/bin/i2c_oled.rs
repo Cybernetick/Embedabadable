@@ -33,15 +33,7 @@ async fn main(spawner: Spawner) {
 
     let shared = CELL.init(Mutex::new(i2c_bus.into_async()));
 
-    let bme280_driver = Bme280::new(shared).await;
-    match bme280_driver {
-        Ok(driver) => {
-            spawner.spawn(bme280::measurements_task(driver).unwrap());
-        }
-        Err(err) => {
-            println!("BME driver initialisation failed with error: {:?}", err);
-        }
-    }
+    spawner.spawn(bme280::measurements_task(shared).unwrap());
     ssd1306_oled::run_init_sequence(shared).await;
     
     let is_time_set = ds1307_clock::is_time_set(shared).await;
